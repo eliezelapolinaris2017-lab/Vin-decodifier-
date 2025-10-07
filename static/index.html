@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Launch-like OBD Web</title>
+<meta name="theme-color" content="#0d0f15">
+<style>
+:root{
+  --bg:#0d1117; --panel:#0f172a; --ink:#e6edf3; --muted:#9aa4b2;
+  --acc:#58a6ff; --ok:#22c55e; --warn:#f59e0b; --danger:#ef4444; --line:#1f2937;
+  --radius:14px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:linear-gradient(180deg,#0b1220 0%, #0d1117 40%, #0b0f16 100%);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+header{position:sticky;top:0;background:#0b1220e0;border-bottom:1px solid var(--line);backdrop-filter:blur(6px);padding:12px 16px;display:flex;gap:10px;align-items:center}
+h1{margin:0;font-size:18px}
+.container{max-width:1100px;margin:18px auto;padding:0 16px}
+.card{background:#0e1525a0;border:1px solid #1f2a3a;border-radius:var(--radius);padding:16px;margin:12px 0;box-shadow:0 8px 24px #00000040}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+input,button,select,textarea{background:#0b1220;color:var(--ink);border:1px solid #1f2937;border-radius:10px;padding:10px 12px}
+button{cursor:pointer}
+button.primary{background:var(--acc);color:#0a0f16;border-color:#1e3a8a}
+kbd{background:#0b1220;padding:.2em .4em;border-radius:6px;border:1px solid #1f2937}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px 10px;border-bottom:1px solid #1f2937}
+th{text-align:left;color:#b8c2cc;font-weight:600}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.code{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace}
+.small{color:var(--muted);font-size:12px}
+.badge{display:inline-block;padding:2px 8px;border:1px solid #2b3b52;border-radius:999px;color:#9fb0c5}
+.live{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.tile{background:#0b1220;border:1px solid #203048;border-radius:12px;padding:10px}
+.tile h4{margin:0 0 6px 0;font-size:13px;color:#bcd}
+.tile .v{font-size:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🔧 Launch-like OBD Web</h1>
+  <span class="badge">Python + FastAPI + python-OBD</span>
+</header>
+
+<div class="container">
+
+  <div class="card">
+    <h3>Conexión</h3>
+    <div class="row">
+      <button onclick="scanPorts()">Escanear puertos</button>
+      <select id="port"></select>
+      <button class="primary" onclick="connect()">Conectar</button>
+      <button onclick="disconnect()">Desconectar</button>
+      <span id="status" class="small"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Lecturas rápidas</h3>
+    <div class="row">
+      <button onclick="readVIN()">Leer VIN</button>
+      <button onclick="readDTC()">Leer DTC</button>
+      <button onclick="clearDTC()">Borrar DTC</button>
+      <button onclick="readMonitors()">Monitores/Estado</button>
+    </div>
+    <pre id="out" class="code" style="white-space:pre-wrap;background:#0b1220;border:1px solid #203048;border-radius:12px;padding:10px;margin-top:10px"></pre>
+  </div>
+
+  <div class="card">
+    <h3>Datos en vivo (WebSocket)</h3>
+    <div class="row">
+      <input id="pids" value="RPM,SPEED,COOLANT_TEMP,ELM_VOLTAGE,THROTTLE_POS" />
+      <input id="interval" type="number" value="500" min="100" step="100" style="width:120px"/>
+      <button class="primary" onclick="startStream()">Iniciar</button>
+      <button onclick="stopStream()">Detener</button>
+    </div>
+    <div id="live" class="live" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h3>PIDs soportados</h3>
+    <button onclick="loadPIDs()">Cargar lista</button>
+    <div id="pidlist" class="small" style="margin-top:8px"></div>
+    <div class="small" style="margin-top:8px">
+      Tip: escribe la lista de PIDs separados por coma, ej. <kbd>RPM,SPEED,COOLANT_TEMP</kbd>.
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const out = $("out");
+let ws;
+
+function log(o){ out.textContent = (typeof o === "string") ? o : JSON.stringify(o, null, 2); }
+
+async function scanPorts(){
+  const res = await fetch("/api/ports");
+  const data = await res.json();
+  const sel = $("port");
+  sel.innerHTML = "";
+  (data.ports || []).forEach(p=>{
+    const opt = document.createElement("option");
+    opt.value = p; opt.textContent = p;
+    sel.appendChild(opt);
+  });
+  $("status").textContent = `Puertos: ${ (data.ports||[]).length }`;
+}
+
+async function connect(){
+  const port = $("port").value || null;
+  const res = await fetch("/api/connect", {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({port, fast:true})
+  });
+  const data = await res.json();
+  log(data);
+  $("status").textContent = data.ok ? `OK: ${data.port} / ${data.protocol}` : "Error al conectar";
+}
+
+async function disconnect(){
+  await fetch("/api/disconnect", {method:"POST"});
+  $("status").textContent = "Desconectado";
+}
+
+async function readVIN(){
+  const res = await fetch("/api/vin");
+  log(await res.json());
+}
+
+async function readDTC(){
+  const res = await fetch("/api/dtc");
+  log(await res.json());
+}
+
+async function clearDTC(){
+  const res = await fetch("/api/dtc", {method:"DELETE"});
+  log(await res.json());
+}
+
+async function readMonitors(){
+  const res = await fetch("/api/monitors");
+  log(await res.json());
+}
+
+async function loadPIDs(){
+  const res = await fetch("/api/pids");
+  const data = await res.json();
+  $("pidlist").textContent = (data.pids || []).join(", ");
+}
+
+function paintLive(data){
+  const live = $("live");
+  live.innerHTML = "";
+  const d = data.data || {};
+  Object.keys(d).forEach(k=>{
+    const v = (d[k]===null || d[k]===undefined) ? "—" : d[k];
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.innerHTML = `<h4>${k}</h4><div class="v">${v}</div>`;
+    live.appendChild(tile);
+  });
+}
+
+function startStream(){
+  stopStream();
+  ws = new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws/live`);
+  ws.onopen = () => {
+    const pids = $("pids").value.trim() || "RPM,SPEED";
+    const interval_ms = parseInt($("interval").value || "500", 10);
+    ws.send(JSON.stringify({pids: pids.split(",").map(s=>s.trim()), interval_ms}));
+  };
+  ws.onmessage = (ev) => {
+    try{
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "live") paintLive(msg);
+      if (msg.type === "error") log(msg);
+    }catch(e){ console.error(e); }
+  };
+  ws.onclose = () => { /* nada */ };
+}
+
+function stopStream(){
+  if (ws){ try{ ws.close(); }catch(e){}; ws = null; }
+}
+</script>
+</body>
+</html>
