@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Decodificador VIN (NHTSA vPIC) — Demo</title>
+  <style>
+    :root{
+      --bg:#0f1724;
+      --card:#0b1220;
+      --accent:#38bdf8;
+      --muted:#94a3b8;
+      --glass: rgba(255,255,255,0.03);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background: linear-gradient(180deg, #071025 0%, #07182b 100%);
+      color:#e6eef8;
+      padding:24px;
+    }
+    .container{
+      width:100%;
+      max-width:900px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:12px;
+      box-shadow: 0 8px 30px rgba(2,6,23,0.7);
+      padding:20px;
+      border:1px solid rgba(255,255,255,0.03);
+    }
+    header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+    header h1{font-size:18px;margin:0}
+    header p{margin:0;color:var(--muted);font-size:13px}
+    form{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    input[type="text"]{
+      flex:1 1 380px;
+      padding:12px 14px;
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,0.06);
+      background:var(--glass);
+      color:inherit;
+      font-size:14px;
+    }
+    input[type="number"]{
+      width:120px;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);
+      background:var(--glass);color:inherit;font-size:14px;
+    }
+    button{
+      padding:10px 14px;border-radius:8px;border:0;background:var(--accent);color:#012135;font-weight:600;
+      cursor:pointer;font-size:14px;
+    }
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+    .meta{margin-top:12px;color:var(--muted);font-size:13px}
+    .result{
+      margin-top:16px;
+      display:grid;
+      grid-template-columns: 1fr;
+      gap:12px;
+    }
+    .card{
+      background: rgba(255,255,255,0.02);
+      border-radius:10px;padding:12px;border:1px solid rgba(255,255,255,0.03);
+    }
+    .kv-grid{display:grid;grid-template-columns: 1fr 1fr;gap:8px}
+    .kv{background:rgba(255,255,255,0.01);padding:8px;border-radius:8px;font-size:13px}
+    .kv b{display:block;color:var(--muted);font-weight:600;margin-bottom:6px}
+    .footer-note{margin-top:10px;color:var(--muted);font-size:12px}
+    pre{white-space:pre-wrap;word-wrap:break-word;font-size:13px;color:#cfeefe;background:transparent;border-radius:6px;padding:6px}
+    .top-actions{display:flex;gap:8px;align-items:center}
+    @media(min-width:720px){ .result{grid-template-columns: 1fr 360px} }
+  </style>
+</head>
+<body>
+  <div class="container" role="main">
+    <header>
+      <div>
+        <h1>Decodificador VIN real (NHTSA vPIC)</h1>
+        <p>Introduce un VIN (17 caracteres recomendado) y pulsa <strong>Decodificar</strong>.</p>
+      </div>
+    </header>
+
+    <form id="vinForm" onsubmit="return false;" aria-label="Formulario para decodificar VIN">
+      <input id="vinInput" type="text" placeholder="Ej: 1HGCM82633A004352 (sin espacios)" maxlength="34" autocomplete="off" inputmode="text" />
+      <input id="yearInput" type="number" placeholder="Año (opcional)" min="1900" max="2035" />
+      <div class="top-actions">
+        <button id="decodeBtn" type="button">Decodificar</button>
+        <button id="clearBtn" class="secondary" type="button">Limpiar</button>
+      </div>
+    </form>
+
+    <div class="meta">
+      <span>API usada: <strong>NHTSA vPIC — DecodeVinValuesExtended</strong></span>
+      <span style="display:block;color:var(--muted)">La API es pública; algunos campos pueden venir vacíos si no hay datos reportados.</span>
+    </div>
+
+    <div id="resultArea" class="result" aria-live="polite"></div>
+
+    <div class="footer-note">
+      <small>Consejo: prueba con VINs reales. La API pública puede tener límites si haces muchas peticiones seguidas.</small>
+    </div>
+  </div>
+
+  <script>
+    // Endpoint base (vPIC - NHTSA)
+    const BASE = 'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/';
+
+    // Elements
+    const vinInput = document.getElementById('vinInput');
+    const yearInput = document.getElementById('yearInput');
+    const decodeBtn = document.getElementById('decodeBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const resultArea = document.getElementById('resultArea');
+
+    // Helper: sanitize VIN (remove spaces, toUpper)
+    function sanitizeVin(v){
+      if(!v) return '';
+      return v.replace(/[^A-Za-z0-9]/g,'').toUpperCase();
+    }
+
+    // Render helpers
+    function showLoading(){
+      resultArea.innerHTML = '<div class="card"><em>Decodificando…</em></div>';
+    }
+    function showError(msg){
+      resultArea.innerHTML = '<div class="card"><strong>Error:</strong> <span style="color:#ffb4b4">'+msg+'</span></div>';
+    }
+    function clearResults(){
+      resultArea.innerHTML = '';
+    }
+
+    // Render object as key/value grid
+    function renderKeyValues(obj){
+      const left = document.createElement('div');
+      left.className = 'card';
+      const right = document.createElement('div');
+      right.className = 'card';
+      // flatten keys
+      const entries = Object.entries(obj).filter(([k]) => k !== 'SearchCriteria');
+      if(entries.length === 0){
+        left.innerHTML = '<em>Sin datos decodificados.</em>';
+        return [left];
+      }
+
+      const grid = document.createElement('div');
+      grid.className = 'kv-grid';
+      entries.forEach(([k,v])=>{
+        const kv = document.createElement('div');
+        kv.className = 'kv';
+        const label = document.createElement('b');
+        label.textContent = k;
+        const val = document.createElement('div');
+        val.textContent = v === null || v === '' ? '(vacío)' : v;
+        kv.appendChild(label);
+        kv.appendChild(val);
+        grid.appendChild(kv);
+      });
+
+      left.appendChild(grid);
+      // raw JSON on right
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(obj, null, 2);
+      right.appendChild(document.createTextNode('Respuesta bruta (JSON):'));
+      right.appendChild(pre);
+      return [left, right];
+    }
+
+    // Main decode function
+    async function decodeVin(){
+      const rawVin = sanitizeVin(vinInput.value);
+      const year = yearInput.value ? parseInt(yearInput.value,10) : null;
+
+      if(!rawVin){
+        showError('Introduce un VIN válido (no vacío).');
+        return;
+      }
+
+      // Basic VIN length hint (17 is standard)
+      if(rawVin.length !== 17){
+        // allow partials but warn
+        if(!confirm('El VIN no tiene 17 caracteres. La API acepta VIN parciales pero la decodificación será parcial. ¿Deseas continuar?')) {
+          return;
+        }
+      }
+
+      showLoading();
+
+      // Construct URL (format=json)
+      // Optionally we can pass model year as query param (?modelyear=YYYY) — but vPIC docs recommend enviar año si se quiere
+      let url = BASE + encodeURIComponent(rawVin) + '?format=json';
+      if(year){
+        url += '&modelyear=' + encodeURIComponent(year);
+      }
+
+      try {
+        const res = await fetch(url, {method:'GET'});
+        if(!res.ok){
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+
+        // vPIC returns Results array and SearchCriteria; we try to use the first result object
+        if(!data || !data.Results || data.Results.length === 0){
+          showError('Respuesta inesperada de la API (sin resultados).');
+          return;
+        }
+
+        const first = data.Results[0];
+        // Render
+        clearResults();
+        const nodes = renderKeyValues(first);
+        nodes.forEach(n => resultArea.appendChild(n));
+
+        // Add handy action buttons: copiar VIN recibido y abrir página oficial
+        const actions = document.createElement('div');
+        actions.style.marginTop = '10px';
+        actions.innerHTML = `
+          <button id="copyBtn">Copiar VIN</button>
+          <button id="openBtn" class="secondary">Abrir en NHTSA (detalle)</button>
+        `;
+        resultArea.appendChild(actions);
+
+        document.getElementById('copyBtn').addEventListener('click', ()=>{
+          navigator.clipboard?.writeText(rawVin).then(()=>alert('VIN copiado al portapapeles.'));
+        });
+        document.getElementById('openBtn').addEventListener('click', ()=>{
+          const decUrl = 'https://vpic.nhtsa.dot.gov/decoder/?vin=' + encodeURIComponent(rawVin);
+          window.open(decUrl, '_blank');
+        });
+
+      } catch(err){
+        showError('Error al conectar con la API: ' + (err.message || err));
+        console.error(err);
+      }
+    }
+
+    // Events
+    decodeBtn.addEventListener('click', decodeVin);
+    clearBtn.addEventListener('click', ()=>{
+      vinInput.value = '';
+      yearInput.value = '';
+      clearResults();
+      vinInput.focus();
+    });
+
+    // Keyboard: enter triggers decode
+    vinInput.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter'){ decodeVin(); e.preventDefault(); }
+    });
+    yearInput.addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter'){ decodeVin(); e.preventDefault(); }
+    });
+
+    // Optional: sample placeholder (you can replace)
+    vinInput.placeholder = 'Ej: 5YJXCCE45GFS01231 — ejemplo Tesla (prueba)';
+  </script>
+</body>
+</html>
