@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Decodificador VIN + Cámara/Imagen + OCR + Check Digit</title>
+<style>
+  :root{ --bg:#0f1724; --card:#0b1220; --accent:#38bdf8; --muted:#94a3b8; --glass:rgba(255,255,255,0.03);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial; }
+  *{ box-sizing:border-box }
+  body{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+        background:linear-gradient(180deg,#071025 0%,#07182b 100%); color:#e6eef8; padding:18px; }
+  .container{ width:100%; max-width:1200px; background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));
+    border-radius:12px; box-shadow:0 8px 30px rgba(2,6,23,.7); padding:18px; border:1px solid rgba(255,255,255,.03); }
+  header{ display:flex; gap:12px; align-items:center; margin-bottom:12px }
+  header h1{ font-size:18px; margin:0 }
+  header p{ margin:0; color:var(--muted); font-size:13px }
+  form{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px }
+  input[type="text"]{ flex:1 1 420px; padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,.06);
+    background:var(--glass); color:inherit; font-size:14px }
+  input[type="number"]{ width:120px; padding:10px; border-radius:8px; border:1px solid rgba(255,255,255,.06);
+    background:var(--glass); color:inherit; font-size:14px }
+  button{ padding:10px 12px; border-radius:8px; border:0; background:var(--accent); color:#012135; font-weight:600;
+    cursor:pointer; font-size:14px }
+  button.secondary{ background:transparent; border:1px solid rgba(255,255,255,.06); color:var(--muted) }
+  .grid{ display:grid; grid-template-columns:1.2fr .8fr; gap:12px }
+  .card{ background:rgba(255,255,255,.02); border-radius:10px; padding:12px; border:1px solid rgba(255,255,255,.03) }
+  .video-wrap{ position:relative; overflow:hidden; border-radius:8px; border:1px solid rgba(255,255,255,.04);
+    background:#000; display:flex; align-items:center; justify-content:center; min-height:260px }
+  video{ width:100%; height:auto; display:block; transform:scaleX(-1); }
+  #overlayBox{ position:absolute; border:2px dashed rgba(56,189,248,.9); pointer-events:auto; cursor:move; width:68%; height:18%;
+    left:16%; bottom:12%; box-sizing:border-box; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:13px }
+  .controls{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px }
+  .muted{ color:var(--muted); font-size:13px }
+  #ocrProgress{ margin-top:8px; color:var(--muted); font-size:13px }
+  pre{ white-space:pre-wrap; word-wrap:break-word; font-size:13px; color:#cfeefe; background:transparent; border-radius:6px; padding:6px }
+  .kv-grid{ display:grid; grid-template-columns:1fr 1fr; gap:8px }
+  .kv{ background:rgba(255,255,255,.01); padding:8px; border-radius:8px; font-size:13px }
+  .kv b{ display:block; color:var(--muted); font-weight:600; margin-bottom:6px }
+  .drop{ border:1px dashed rgba(56,189,248,.6); border-radius:10px; padding:10px; text-align:center; background:rgba(56,189,248,.08) }
+  .badge{ display:inline-block; padding:2px 6px; border-radius:6px; font-size:12px; font-weight:700 }
+  .ok{ background:#0ea5e9; color:#012135 }
+  .warn{ background:#fbbf24; color:#012135 }
+  .err{ background:#ef4444; color:white }
+  .history-list{ display:grid; gap:8px; margin-top:8px }
+  .hist-item{ display:flex; align-items:center; justify-content:space-between; gap:8px; background:rgba(255,255,255,.02); border:1px solid rgba(255,255,255,.04); border-radius:8px; padding:8px }
+  @media(max-width:1000px){ .grid{ grid-template-columns:1fr } video{ height:260px; object-fit:cover } }
+</style>
+<!-- Tesseract.js -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.3/dist/tesseract.min.js"></script>
+</head>
+<body>
+<div class="container" role="main">
+  <header>
+    <div>
+      <h1>Decodificador VIN + Cámara/Imagen (OCR en cliente) + Check Digit</h1>
+      <p>Escanea o sube una imagen del VIN. Detecta 17 caracteres válidos, corrige confusiones comunes y valida el dígito verificador.</p>
+    </div>
+  </header>
+
+  <form id="vinForm" onsubmit="return false;">
+    <input id="vinInput" type="text" placeholder="Ej: 1HGCM82633A004352" maxlength="34" autocomplete="off" />
+    <input id="yearInput" type="number" placeholder="Año (opcional)" min="1900" max="2035" />
+    <div style="display:flex;gap:8px">
+      <button id="decodeBtn" type="button">Decodificar</button>
+      <button id="clearBtn" class="secondary" type="button">Limpiar</button>
+    </div>
+  </form>
+
+  <div class="grid">
+    <div class="card">
+      <!-- Cámara -->
+      <div class="video-wrap" id="videoWrap">
+        <video id="video" autoplay playsinline></video>
+        <div id="overlayBox" title="Arrastra y ajusta sobre el VIN">Caja de recorte</div>
+      </div>
+      <div class="controls">
+        <button id="startCamBtn" type="button">Abrir cámara</button>
+        <button id="stopCamBtn" type="button" class="secondary">Detener cámara</button>
+        <button id="captureBtn" type="button" class="secondary">Capturar</button>
+        <label class="muted" style="display:flex;align-items:center;gap:6px"><input id="continuousCheckbox" type="checkbox"> Escaneo continuo</label>
+        <label class="muted">Intervalo
+          <input id="scanInterval" type="number" min="400" max="5000" value="1500" style="width:90px;margin-left:6px;padding:6px;border-radius:6px;background:transparent;border:1px solid rgba(255,255,255,.06);color:inherit"> ms
+        </label>
+      </div>
+
+      <!-- Imagen subida -->
+      <div style="margin-top:12px; display:grid; gap:8px">
+        <div class="drop" id="dropZone">
+          Arrastra una imagen aquí o <label style="text-decoration:underline; cursor:pointer">
+            selecciónala<input id="fileInput" type="file" accept="image/*" style="display:none">
+          </label>
+        </div>
+        <div class="muted">El OCR se ejecuta localmente con <strong>Tesseract.js</strong>. No se envían imágenes a servidores externos.</div>
+      </div>
+
+      <div id="ocrProgress" class="muted" style="margin-top:8px">Estado: inactivo</div>
+      <div class="muted" style="margin-top:8px">Consejo: buena luz, enfoque nítido y encuadra el VIN completo.</div>
+    </div>
+
+    <div class="card" id="resultArea" aria-live="polite">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><strong>Resultado</strong></div>
+        <div class="muted">API: NHTSA vPIC (DecodeVinValuesExtended)</div>
+      </div>
+
+      <div style="margin-top:10px" class="kv-grid">
+        <div class="kv"><b>VIN detectado</b><div id="detectedVin">(vacío)</div></div>
+        <div class="kv"><b>Validación (check digit)</b><div id="checkDigitBox"><span class="badge warn">Sin verificar</span></div></div>
+        <div class="kv"><b>Acciones</b>
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+            <button id="copyVinBtn" class="secondary" type="button">Copiar VIN</button>
+            <button id="openNhtsaBtn" class="secondary" type="button">Abrir en NHTSA</button>
+            <button id="forceDecodeBtn" type="button">Decodificar ahora</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="decodedCard" style="margin-top:12px"></div>
+
+      <div style="margin-top:14px">
+        <strong>Historial local</strong>
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =======================
+   Utilidades generales
+   ======================= */
+const BASE = 'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/';
+const vinInput = document.getElementById('vinInput');
+const yearInput = document.getElementById('yearInput');
+const decodeBtn = document.getElementById('decodeBtn');
+const clearBtn = document.getElementById('clearBtn');
+const resultArea = document.getElementById('resultArea');
+const decodedCard = document.getElementById('decodedCard');
+const detectedVinEl = document.getElementById('detectedVin');
+const checkDigitBox = document.getElementById('checkDigitBox');
+const copyVinBtn = document.getElementById('copyVinBtn');
+const openNhtsaBtn = document.getElementById('openNhtsaBtn');
+const forceDecodeBtn = document.getElementById('forceDecodeBtn');
+const historyList = document.getElementById('historyList');
+
+const video = document.getElementById('video');
+const startCamBtn = document.getElementById('startCamBtn');
+const stopCamBtn = document.getElementById('stopCamBtn');
+const captureBtn = document.getElementById('captureBtn');
+const overlayBox = document.getElementById('overlayBox');
+const ocrProgress = document.getElementById('ocrProgress');
+const continuousCheckbox = document.getElementById('continuousCheckbox');
+const scanIntervalInput = document.getElementById('scanInterval');
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+let stream = null;
+let worker = null;
+let scanTimer = null;
+let ocrRunning = false;
+
+// VIN: caracteres válidos (sin I, O, Q)
+const VIN_CLEAN_REGEX = /[A-HJ-NPR-Z0-9]/gi;
+const VIN_FULL_REGEX = /([A-HJ-NPR-Z0-9\-\s]{17,28})/gi;
+
+/* =======================
+   Limpieza/heurísticas OCR
+   ======================= */
+// Corrige confusiones típicas de OCR: O->0, I->1, Q->0, S<->5, B<->8, Z<->2 (solo si ayuda a acercarse a 17 y a la validez)
+function ocrHeuristicFix(str) {
+  if(!str) return str;
+  // Primero normaliza a mayúsculas y quita puntos/simbolitos raros
+  let s = str.toUpperCase().replace(/[^\w\s\-]/g,'');
+  // Mapeos razonables
+  s = s.replace(/O/g,'0');  // O -> 0 (O no es válido en VIN)
+  s = s.replace(/I/g,'1');  // I -> 1 (I no es válido en VIN)
+  s = s.replace(/Q/g,'0');  // Q -> 0 (Q no es válido en VIN)
+  // Opcionales (solo si aparecen rodeados de dígitos mayormente)
+  s = s.replace(/(?<=\d)S(?=\d)/g,'5').replace(/(?<=\d)Z(?=\d)/g,'2').replace(/(?<=\d)B(?=\d)/g,'8');
+  return s;
+}
+
+function sanitizeVin(v) {
+  if(!v) return '';
+  const only = (ocrHeuristicFix(v).match(VIN_CLEAN_REGEX) || []).join('');
+  return only.toUpperCase().slice(0,17);
+}
+
+/* =======================
+   Check Digit (ISO 3779)
+   ======================= */
+const translit = {
+  A:1,B:2,C:3,D:4,E:5,F:6,G:7,H:8,
+  J:1,K:2,L:3,M:4,N:5,P:7,R:9,
+  S:2,T:3,U:4,V:5,W:6,X:7,Y:8,Z:9
+};
+const weights = [8,7,6,5,4,3,2,10,0,9,8,7,6,5,4,3,2];
+
+function computeCheckDigit(vin) {
+  // vin debe ser 17
+  if(!vin || vin.length !== 17) return null;
+  let sum = 0;
+  for (let i=0;i<17;i++){
+    const ch = vin[i];
+    let val = 0;
+    if(/[0-9]/.test(ch)) val = Number(ch);
+    else if(/[A-Z]/.test(ch)) val = translit[ch] || 0;
+    else return null;
+    sum += val * weights[i];
+  }
+  const rem = sum % 11;
+  return rem === 10 ? 'X' : String(rem);
+}
+
+function validateVinWithCheckDigit(vin){
+  if(!vin || vin.length!==17) return {status:'unknown'};
+  const provided = vin[8];
+  const computed = computeCheckDigit(vin);
+  if(computed == null) return {status:'unknown'};
+  const valid = (provided === computed);
+  return {status: valid ? 'valid' : 'invalid', provided, computed};
+}
+
+function renderCheckDigitStatus(vin) {
+  const res = validateVinWithCheckDigit(vin);
+  if(res.status === 'valid'){
+    checkDigitBox.innerHTML = `<span class="badge ok">Check digit OK</span> (provisto: <b>${res.provided}</b>, calculado: <b>${res.computed}</b>)`;
+  } else if(res.status === 'invalid'){
+    checkDigitBox.innerHTML = `<span class="badge err">Check digit NO coincide</span> (provisto: <b>${res.provided}</b>, calculado: <b>${res.computed}</b>)`;
+  } else {
+    checkDigitBox.innerHTML = `<span class="badge warn">Sin verificar</span>`;
+  }
+}
+
+/* =======================
+   Historial local
+   ======================= */
+const LS_KEY = 'vinHistory_v1';
+function loadHistory(){
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
+}
+function saveHistory(arr){
+  localStorage.setItem(LS_KEY, JSON.stringify(arr.slice(0,50))); // limita a 50 entradas
+}
+function pushHistory(vin){
+  const now = new Date();
+  const chk = validateVinWithCheckDigit(vin);
+  const rec = { vin, ts: now.toISOString(), check: chk.status, computed: chk.computed || null, provided: vin[8] };
+  const list = loadHistory();
+  // evita duplicados consecutivos
+  if(!list[0] || list[0].vin !== vin){
+    list.unshift(rec);
+    saveHistory(list);
+  }
+  renderHistory();
+}
+function renderHistory(){
+  const list = loadHistory();
+  historyList.innerHTML = '';
+  if(list.length === 0){
+    historyList.innerHTML = '<div class="muted">Sin registros aún.</div>';
+    return;
+  }
+  list.forEach(item=>{
+    const d = new Date(item.ts);
+    const badge =
+      item.check==='valid' ? '<span class="badge ok">OK</span>' :
+      item.check==='invalid' ? '<span class="badge err">FAIL</span>' :
+      '<span class="badge warn">N/A</span>';
+    const row = document.createElement('div');
+    row.className = 'hist-item';
+    row.innerHTML = `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${badge}
+        <code style="font-weight:700">${item.vin}</code>
+        <span class="muted">${d.toLocaleString()}</span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="secondary" data-vin="${item.vin}">Usar</button>
+      </div>
+    `;
+    row.querySelector('button').addEventListener('click', (e)=>{
+      vinInput.value = item.vin;
+      detectedVinEl.textContent = item.vin;
+      renderCheckDigitStatus(item.vin);
+      decodeVin(false);
+    });
+    historyList.appendChild(row);
+  });
+}
+renderHistory();
+
+/* =======================
+   Cámara + OCR
+   ======================= */
+async function startCamera(){
+  try {
+    if(stream) return;
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    video.srcObject = stream;
+    ocrProgress.textContent = 'Cámara activa';
+    // calienta OCR
+    initTesseract().catch(()=>{});
+  } catch (err) {
+    console.error(err);
+    ocrProgress.textContent = 'Error al abrir la cámara: ' + (err.message || err);
+  }
+}
+function stopCamera(){
+  if(stream){
+    stream.getTracks().forEach(t=>t.stop());
+    stream = null;
+    video.srcObject = null;
+    ocrProgress.textContent = 'Cámara detenida';
+  }
+  stopContinuousScan();
+}
+
+// overlay draggable
+(function(){
+  let isDown=false, startX=0, startY=0, origLeft=0, origTop=0;
+  overlayBox.addEventListener('pointerdown', (e)=>{
+    isDown=true; overlayBox.setPointerCapture(e.pointerId);
+    startX=e.clientX; startY=e.clientY;
+    const rc=overlayBox.getBoundingClientRect();
+    const parent=document.getElementById('videoWrap').getBoundingClientRect();
+    origLeft=rc.left - parent.left; origTop=rc.top - parent.top;
+  });
+  window.addEventListener('pointermove', (e)=>{
+    if(!isDown) return;
+    const parent=document.getElementById('videoWrap').getBoundingClientRect();
+    let nx = origLeft + (e.clientX - startX);
+    let ny = origTop + (e.clientY - startY);
+    nx = Math.max(0, Math.min(nx, parent.width - overlayBox.offsetWidth));
+    ny = Math.max(0, Math.min(ny, parent.height - overlayBox.offsetHeight));
+    overlayBox.style.left = (nx / parent.width * 100) + '%';
+    overlayBox.style.top = (ny / parent.height * 100) + '%';
+    overlayBox.style.bottom = 'auto';
+  });
+  window.addEventListener('pointerup', ()=>{ isDown=false; });
+})();
+
+async function initTesseract(){
+  if(worker) return;
+  ocrProgress.textContent = 'Inicializando OCR...';
+  worker = Tesseract.createWorker({
+    logger: m => {
+      if(m.status === 'recognizing text' && m.progress){
+        ocrProgress.textContent = `OCR: ${(m.progress*100|0)}%`;
+      } else if (m.status) {
+        ocrProgress.textContent = `OCR: ${m.status}`;
+      }
+    }
+  });
+  await worker.load();
+  await worker.loadLanguage('eng');
+  await worker.initialize('eng');
+  await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK });
+  ocrProgress.textContent = 'OCR listo';
+}
+
+function captureFrameToCanvas(){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if(!vw || !vh) return null;
+  const videoRect = video.getBoundingClientRect();
+  const overlayRect = overlayBox.getBoundingClientRect();
+  const scaleX = vw / videoRect.width;
+  const scaleY = vh / videoRect.height;
+
+  const sx = (overlayRect.left - videoRect.left) * scaleX;
+  const sy = (overlayRect.top - videoRect.top) * scaleY;
+  const sw = overlayRect.width * scaleX;
+  const sh = overlayRect.height * scaleY;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw; canvas.height = sh;
+  const ctx = canvas.getContext('2d');
+  // des-espejar (el <video> está espejado)
+  ctx.translate(canvas.width, 0); ctx.scale(-1,1);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+async function doOcrFromVideo(){
+  if(!stream){ ocrProgress.textContent = 'Cámara no iniciada'; return; }
+  if(ocrRunning) return;
+  ocrRunning = true;
+  try{
+    await initTesseract();
+    const canvas = captureFrameToCanvas();
+    if(!canvas){ ocrProgress.textContent = 'Esperando video...'; ocrRunning=false; return; }
+    const dataUrl = canvas.toDataURL('image/jpeg', .9);
+    const res = await worker.recognize(dataUrl);
+    processOcrText(res?.data?.text || '');
+  } catch(e){
+    console.error(e);
+    ocrProgress.textContent = 'Error OCR: ' + (e.message || e);
+  } finally { ocrRunning=false; }
+}
+
+/* =======================
+   OCR desde imagen subida
+   ======================= */
+dropZone.addEventListener('click', ()=>fileInput.click());
+fileInput.addEventListener('change', handleFiles);
+['dragenter','dragover'].forEach(ev=>{
+  dropZone.addEventListener(ev, e=>{ e.preventDefault(); dropZone.style.background='rgba(56,189,248,.14)'; });
+});
+['dragleave','drop'].forEach(ev=>{
+  dropZone.addEventListener(ev, e=>{ e.preventDefault(); dropZone.style.background='rgba(56,189,248,.08)'; });
+});
+dropZone.addEventListener('drop', (e)=>{
+  const files = e.dataTransfer.files;
+  if(files && files[0]) handleFile(files[0]);
+});
+function handleFiles(e){
+  const f = e.target.files[0];
+  if(f) handleFile(f);
+}
+async function handleFile(file){
+  await initTesseract();
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = async ()=>{
+    try{
+      // Lienzo con escalado a un ancho razonable para OCR (máx 1600 px)
+      const maxW = 1600;
+      const scale = Math.min(1, maxW / img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width*scale);
+      canvas.height = Math.round(img.height*scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      ocrProgress.textContent = 'Procesando imagen subida...';
+      const res = await worker.recognize(canvas.toDataURL('image/jpeg', .92));
+      processOcrText(res?.data?.text || '');
+    } catch(e){
+      console.error(e);
+      ocrProgress.textContent = 'Error OCR (imagen): ' + (e.message || e);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+  img.onerror = ()=>{ ocrProgress.textContent = 'No se pudo leer la imagen.'; URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+/* =======================
+   Procesamiento de texto OCR → VIN
+   ======================= */
+function processOcrText(rawText){
+  if(!rawText || !rawText.trim()){ ocrProgress.textContent = 'OCR: sin texto'; return; }
+  // Candidatos con regex laxo (permitiendo espacios/guiones), luego saneamos
+  const candidates = [];
+  let m;
+  const txt = ocrHeuristicFix(rawText);
+  while((m = VIN_FULL_REGEX.exec(txt)) !== null){
+    candidates.push(m[1]);
+  }
+  if(candidates.length === 0){
+    // fallback: escanear secuencias puras
+    const flat = (txt.match(VIN_CLEAN_REGEX) || []).join('');
+    for(let i=0;i+17<=flat.length;i++){
+      candidates.push(flat.slice(i,i+17));
+    }
+  }
+  // Escoge el mejor candidato con check digit válido si es posible
+  let chosen = null, validScore = -1;
+  for(const c of candidates){
+    const s = sanitizeVin(c);
+    if(s.length === 17){
+      const chk = validateVinWithCheckDigit(s);
+      const score = (chk.status==='valid') ? 2 : (chk.status==='invalid' ? 0 : 1);
+      if(score > validScore){ validScore = score; chosen = s; }
+      if(score === 2) break; // preferimos el primero con check dígito OK
+    }
+  }
+
+  if(chosen){
+    detectedVinEl.textContent = chosen;
+    vinInput.value = chosen;
+    renderCheckDigitStatus(chosen);
+    ocrProgress.textContent = 'VIN detectado: ' + chosen;
+    decodeVin(true);
+  } else {
+    ocrProgress.textContent = 'No se detectó un VIN de 17 caracteres. Texto: ' + txt.trim().slice(0,120);
+  }
+}
+
+/* =======================
+   Escaneo continuo
+   ======================= */
+function startContinuousScan(){
+  if(scanTimer) return;
+  const intv = Math.max(400, parseInt(scanIntervalInput.value,10) || 1500);
+  scanTimer = setInterval(()=>{ doOcrFromVideo(); }, intv);
+  ocrProgress.textContent = 'Escaneo continuo activo';
+}
+function stopContinuousScan(){
+  if(scanTimer){ clearInterval(scanTimer); scanTimer=null; ocrProgress.textContent = 'Escaneo continuo detenido'; }
+}
+
+/* =======================
+   Decodificación NHTSA
+   ======================= */
+function showLoading(){ decodedCard.innerHTML = '<div class="card"><em>Decodificando…</em></div>'; }
+function showError(msg){ decodedCard.innerHTML = '<div class="card"><strong>Error:</strong> <span style="color:#ffb4b4">'+msg+'</span></div>'; }
+function clearResults(){ decodedCard.innerHTML = ''; }
+
+function renderKeyValues(obj){
+  const container = document.createElement('div');
+  container.className = 'card';
+  const grid = document.createElement('div');
+  grid.className = 'kv-grid';
+  Object.entries(obj).forEach(([k,v])=>{
+    const kv = document.createElement('div'); kv.className='kv';
+    kv.innerHTML = `<b>${k}</b><div>${(v===null||v==='') ? '(vacío)' : v}</div>`;
+    grid.appendChild(kv);
+  });
+  container.appendChild(grid);
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(obj, null, 2);
+  container.appendChild(document.createTextNode('Respuesta bruta (JSON):'));
+  container.appendChild(pre);
+  return container;
+}
+
+async function decodeVin(auto=false){
+  const rawVin = sanitizeVin(vinInput.value);
+  const year = yearInput.value ? parseInt(yearInput.value,10) : null;
+
+  if(!rawVin){
+    if(!auto) showError('Introduce un VIN válido (no vacío).');
+    return;
+  }
+  if(rawVin.length !== 17){
+    if(auto){ /* no interrumpas flujos automáticos */ }
+    else if(!confirm('El VIN no tiene 17 caracteres. ¿Continuar de todas formas?')) return;
+  }
+
+  renderCheckDigitStatus(rawVin);
+  showLoading();
+  try{
+    let url = BASE + encodeURIComponent(rawVin) + '?format=json';
+    if(year) url += '&modelyear=' + encodeURIComponent(year);
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(!data || !data.Results || data.Results.length===0){ showError('Respuesta inesperada de la API (sin resultados).'); return; }
+    clearResults();
+    decodedCard.appendChild(renderKeyValues(data.Results[0]));
+    detectedVinEl.textContent = rawVin;
+    pushHistory(rawVin);
+  } catch(err){
+    console.error(err);
+    showError('Error al conectar con la API: ' + (err.message || err));
+  }
+}
+
+/* =======================
+   Eventos UI
+   ======================= */
+decodeBtn.addEventListener('click', ()=>decodeVin(false));
+clearBtn.addEventListener('click', ()=>{
+  vinInput.value=''; yearInput.value=''; detectedVinEl.textContent='(vacío)'; checkDigitBox.innerHTML='<span class="badge warn">Sin verificar</span>'; clearResults();
+});
+copyVinBtn.addEventListener('click', ()=>{
+  const v = vinInput.value || detectedVinEl.textContent;
+  if(!v || v==='(vacío)') return alert('No hay VIN para copiar.');
+  navigator.clipboard?.writeText(v).then(()=>alert('VIN copiado.'));
+});
+openNhtsaBtn.addEventListener('click', ()=>{
+  const v = vinInput.value || detectedVinEl.textContent;
+  if(!v || v==='(vacío)') return alert('No hay VIN para abrir.');
+  window.open('https://vpic.nhtsa.dot.gov/decoder/?vin=' + encodeURIComponent(v), '_blank');
+});
+forceDecodeBtn.addEventListener('click', ()=>decodeVin(false));
+
+startCamBtn.addEventListener('click', startCamera);
+stopCamBtn.addEventListener('click', stopCamera);
+captureBtn.addEventListener('click', ()=>doOcrFromVideo());
+continuousCheckbox.addEventListener('change', ()=> continuousCheckbox.checked ? startContinuousScan() : stopContinuousScan());
+
+// liberar recursos al salir
+window.addEventListener('beforeunload', ()=>{
+  stopCamera();
+  if(worker && worker.terminate) worker.terminate();
+});
+
+// Placeholder útil
+vinInput.placeholder = 'Ej: 5YJXCCE45GFS01231 (ejemplo)';
+</script>
+</body>
+</html>
