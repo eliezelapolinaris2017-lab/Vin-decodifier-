@@ -1,0 +1,12 @@
+{
+  "P0300": "Fallo aleatorio/múltiple de encendido en cilindros",
+  "P0171": "Sistema demasiado pobre (Bank 1)",
+  "P0172": "Sistema demasiado rico (Bank 1)",
+  "P0420": "Eficiencia del catalizador por debajo del umbral (Bank 1)",
+  "P0440": "Malfuncionamiento del sistema EVAP",
+  "P0500": "Sensor de velocidad del vehículo (VSS) - malfuncionamiento",
+  "P0113": "IAT alta (Sensor temperatura aire admisión)",
+  "P0128": "Termostato: temperatura baja",
+  "P0562": "Voltaje del sistema bajo",
+  "U0100": "Pérdida de comunicación con ECM/PCM 'A'"
+}
